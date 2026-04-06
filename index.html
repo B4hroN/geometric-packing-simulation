@@ -1,0 +1,913 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Shape Groups Simulation</title>
+    <style>
+        canvas { border: 1px solid black; display: block; margin-bottom: 10px; }
+        #controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    </style>
+</head>
+<body>
+    <canvas id="canvas" width="600" height="600"></canvas>
+    <div id="controls">
+        <button id="iterate">Step</button>
+        <button id="reset">Randomize</button>
+        <button id="maxsize">Max Size</button>
+        <div>
+            <input type="range" id="scale" min="0.3" max="3.0" step="0.01" value="0.8">
+            <span id="scaleValue">0.80</span>
+        </div>
+        <div>
+            <input type="range" id="gap" min="0" max="50" step="1" value="10">
+            <span id="gapValue">10</span>
+        </div>
+        <div>
+            <input type="range" id="count" min="1" max="10" step="1" value="7">
+            <span id="countValue">7</span>
+        </div>
+    </div>
+    <script>
+        (function() {
+            const canvas = document.getElementById('canvas');
+            const ctx = canvas.getContext('2d');
+            const w = canvas.width, h = canvas.height;
+            const centerX = w/2, centerY = h/2;
+            const R = 250;
+
+            const allTypes = [
+                'circle', 'circle', 
+                'rectangle', 'square', 
+                'hexagon', 'quad',
+                'circle', 'circle', 'circle', 'circle'
+            ];
+            const allBaseRadii = [1.0, 0.85, 0.8, 0.6, 0.7, 0.5, 0.4, 0.35, 0.3, 0.25];
+            const maxN = 10;
+
+            let N = 7;
+            let baseRadii = allBaseRadii.slice(0, N);
+            let types = allTypes.slice(0, N);
+            let quadLocalVerts = new Array(N).fill(null);
+            let groups = [];
+            const baseScale = 50;
+            let scale = 0.8;
+            let gap = 10;
+            let centers = [];
+            let angles = [];
+            let velocities = [];
+            let angularVelocities = [];
+
+            function getGroupLeader(idx) {
+                for (let g of groups) {
+                    if (g.leader === idx) return idx;
+                    for (let f of g.followers) {
+                        if (f.idx === idx) return g.leader;
+                    }
+                }
+                return -1;
+            }
+
+            function getRegularPolygonVerts(type) {
+                let n;
+                if (type === 'triangle') n = 3;
+                else if (type === 'square') n = 4;
+                else if (type === 'hexagon') n = 6;
+                else return [];
+                const verts = [];
+                for (let i = 0; i < n; i++) {
+                    let theta = i * 2 * Math.PI / n - Math.PI/2;
+                    verts.push({ x: Math.cos(theta), y: Math.sin(theta) });
+                }
+                return verts;
+            }
+
+            function createGroups() {
+                groups = [];
+                if (2 < N && 3 < N && types[2] === 'rectangle' && types[3] === 'square') {
+                    const ratioW = 7, ratioH = 4;
+                    const diag = Math.sqrt(ratioW*ratioW + ratioH*ratioH);
+                    const halfW = ratioW / diag;
+                    const halfH = ratioH / diag;
+                    const A = { x: -halfW, y: -halfH };
+                    const squareSide = Math.sqrt(2);
+                    const L = (baseRadii[3] / baseRadii[2]) * squareSide;
+                    const B = { x: -halfW + L, y: -halfH };
+                    const auxMid = {
+                        x: (A.x + B.x) / 2,
+                        y: (A.y + B.y) / 2
+                    };
+                    const squareVerts = getRegularPolygonVerts('square');
+                    const v2 = squareVerts[2];
+                    const v3 = squareVerts[3];
+                    const edgeVec = { x: v2.x - v3.x, y: v2.y - v3.y };
+                    const angleEdge = Math.atan2(edgeVec.y, edgeVec.x);
+                    const relAngle = 0 - angleEdge;
+                    const quadMid = {
+                        x: (v2.x + v3.x) / 2,
+                        y: (v2.y + v3.y) / 2
+                    };
+                    const cosA = Math.cos(relAngle);
+                    const sinA = Math.sin(relAngle);
+                    const rotatedQuadMid = {
+                        x: quadMid.x * cosA - quadMid.y * sinA,
+                        y: quadMid.x * sinA + quadMid.y * cosA
+                    };
+                    const offsetX = baseRadii[2] * auxMid.x - baseRadii[3] * rotatedQuadMid.x;
+                    const offsetY = baseRadii[2] * auxMid.y - baseRadii[3] * rotatedQuadMid.y;
+                    groups.push({
+                        leader: 2,
+                        followers: [{ idx: 3, offsetX, offsetY, relAngle }]
+                    });
+                }
+
+                if (4 < N && 5 < N && types[4] === 'hexagon' && types[5] === 'quad') {
+                    const hexVerts = getRegularPolygonVerts('hexagon');
+                    const quadVerts = quadLocalVerts[5] || [
+                        { x: -0.85, y: -0.5 },
+                        { x:  0.85, y: -0.5 },
+                        { x:  0.6,  y:  0.5 },
+                        { x: -0.6,  y:  0.5 }
+                    ];
+                    const hexEdge = [3, 4];
+                    const quadEdge = [2, 3];
+                    const hexMid = {
+                        x: (hexVerts[hexEdge[0]].x + hexVerts[hexEdge[1]].x) / 2,
+                        y: (hexVerts[hexEdge[0]].y + hexVerts[hexEdge[1]].y) / 2
+                    };
+                    const quadMid = {
+                        x: (quadVerts[quadEdge[0]].x + quadVerts[quadEdge[1]].x) / 2,
+                        y: (quadVerts[quadEdge[0]].y + quadVerts[quadEdge[1]].y) / 2
+                    };
+                    const hexEdgeVec = {
+                        x: hexVerts[hexEdge[1]].x - hexVerts[hexEdge[0]].x,
+                        y: hexVerts[hexEdge[1]].y - hexVerts[hexEdge[0]].y
+                    };
+                    const hexNormalOut = { x: -hexEdgeVec.y, y: hexEdgeVec.x };
+                    const quadEdgeVec = {
+                        x: quadVerts[quadEdge[1]].x - quadVerts[quadEdge[0]].x,
+                        y: quadVerts[quadEdge[1]].y - quadVerts[quadEdge[0]].y
+                    };
+                    const quadNormalOut = { x: -quadEdgeVec.y, y: quadEdgeVec.x };
+                    const quadNormalIn = { x: -quadNormalOut.x, y: -quadNormalOut.y };
+                    const angleHex = Math.atan2(hexNormalOut.y, hexNormalOut.x);
+                    const angleQuad = Math.atan2(quadNormalIn.y, quadNormalIn.x);
+                    let relAngle = angleHex - angleQuad;
+                    const cosA = Math.cos(relAngle);
+                    const sinA = Math.sin(relAngle);
+                    const rotatedQuadMid = {
+                        x: quadMid.x * cosA - quadMid.y * sinA,
+                        y: quadMid.x * sinA + quadMid.y * cosA
+                    };
+                    const offsetX = baseRadii[4] * hexMid.x - baseRadii[5] * rotatedQuadMid.x;
+                    const offsetY = baseRadii[4] * hexMid.y - baseRadii[5] * rotatedQuadMid.y;
+                    groups.push({
+                        leader: 4,
+                        followers: [{ idx: 5, offsetX, offsetY, relAngle }]
+                    });
+                }
+            }
+
+            function initQuadLocalVerts() {
+                for (let i = 0; i < N; i++) {
+                    if (types[i] === 'quad') {
+                        let verts = [
+                            { x: -0.85, y: -0.5 },
+                            { x:  0.85, y: -0.5 },
+                            { x:  0.6,  y:  0.5 },
+                            { x: -0.6,  y:  0.5 }
+                        ];
+                        let maxDist = 0;
+                        for (let v of verts) {
+                            let d = Math.hypot(v.x, v.y);
+                            if (d > maxDist) maxDist = d;
+                        }
+                        if (maxDist > 0) {
+                            for (let v of verts) {
+                                v.x /= maxDist;
+                                v.y /= maxDist;
+                            }
+                        }
+                        quadLocalVerts[i] = verts;
+                    }
+                }
+            }
+
+            function initCentersAndVelocities() {
+                centers = [];
+                angles = [];
+                velocities = [];
+                angularVelocities = [];
+                quadLocalVerts = new Array(N).fill(null);
+                initQuadLocalVerts();
+
+                for (let i = 0; i < N; i++) {
+                    let x, y, d;
+                    const rColl = collisionRadii()[i];
+                    do {
+                        x = centerX + (Math.random() - 0.5) * 2 * R * 0.9;
+                        y = centerY + (Math.random() - 0.5) * 2 * R * 0.9;
+                        d = Math.hypot(x - centerX, y - centerY);
+                    } while (d + rColl > R);
+                    centers.push({x, y});
+                    angles.push(Math.random() * 2 * Math.PI);
+                    velocities.push({x: 0, y: 0});
+                    angularVelocities.push(0);
+                }
+
+                createGroups();
+                updateGroupPositions();
+            }
+
+            function updateGroupPositions() {
+                for (let g of groups) {
+                    const leader = g.leader;
+                    if (leader >= centers.length) continue;
+                    const lx = centers[leader].x;
+                    const ly = centers[leader].y;
+                    const lAngle = angles[leader];
+                    for (let f of g.followers) {
+                        const idx = f.idx;
+                        if (idx >= centers.length) continue;
+                        const dx = f.offsetX * scale * baseScale;
+                        const dy = f.offsetY * scale * baseScale;
+                        const rx = dx * Math.cos(lAngle) - dy * Math.sin(lAngle);
+                        const ry = dx * Math.sin(lAngle) + dy * Math.cos(lAngle);
+                        centers[idx].x = lx + rx;
+                        centers[idx].y = ly + ry;
+                        angles[idx] = lAngle + f.relAngle;
+                        velocities[idx].x = 0;
+                        velocities[idx].y = 0;
+                        angularVelocities[idx] = 0;
+                    }
+                }
+            }
+
+            function inSameGroup(i, j) {
+                for (let g of groups) {
+                    const members = [g.leader, ...g.followers.map(f => f.idx)];
+                    if (members.includes(i) && members.includes(j)) return true;
+                }
+                return false;
+            }
+
+            function getGroupMembers() {
+                const members = new Set();
+                for (let g of groups) {
+                    members.add(g.leader);
+                    for (let f of g.followers) members.add(f.idx);
+                }
+                return members;
+            }
+
+            function enforceGroupBoundary() {
+                const rColl = collisionRadii();
+                for (let iter = 0; iter < 10; iter++) {
+                    let anyOutside = false;
+                    for (let g of groups) {
+                        const leader = g.leader;
+                        const all = [leader, ...g.followers.map(f => f.idx)];
+                        for (let idx of all) {
+                            const dx = centers[idx].x - centerX;
+                            const dy = centers[idx].y - centerY;
+                            const dist = Math.hypot(dx, dy);
+                            const maxDist = R - rColl[idx];
+                            if (dist > maxDist) {
+                                anyOutside = true;
+                                if (dist > 1e-6) {
+                                    const nx = dx / dist;
+                                    const ny = dy / dist;
+                                    const neededShift = (maxDist - dist) * 0.8;
+                                    centers[leader].x += nx * neededShift;
+                                    centers[leader].y += ny * neededShift;
+                                } else {
+                                    centers[leader].x = centerX + (R - rColl[idx]) * 0.5;
+                                    centers[leader].y = centerY + (R - rColl[idx]) * 0.5;
+                                }
+                                updateGroupPositions();
+                                break;
+                            }
+                        }
+                    }
+                    if (!anyOutside) break;
+                }
+            }
+
+            function visualRadii() {
+                return baseRadii.map(r => r * scale * baseScale);
+            }
+            function collisionRadii() {
+                return visualRadii().map(r => r + gap/2);
+            }
+
+            function getPolygonVertices(type, cx, cy, R_coll, angle, quadVertsLocal = null) {
+                if (type === 'circle') return [];
+                const vertices = [];
+                if (type === 'triangle') {
+                    for (let i = 0; i < 3; i++) {
+                        let theta = angle + (i * 2 * Math.PI / 3) - Math.PI/2;
+                        vertices.push({ x: cx + R_coll * Math.cos(theta), y: cy + R_coll * Math.sin(theta) });
+                    }
+                } else if (type === 'square') {
+                    for (let i = 0; i < 4; i++) {
+                        let theta = angle + (i * 2 * Math.PI / 4) - Math.PI/2;
+                        vertices.push({ x: cx + R_coll * Math.cos(theta), y: cy + R_coll * Math.sin(theta) });
+                    }
+                } else if (type === 'hexagon') {
+                    for (let i = 0; i < 6; i++) {
+                        let theta = angle + (i * 2 * Math.PI / 6) - Math.PI/2;
+                        vertices.push({ x: cx + R_coll * Math.cos(theta), y: cy + R_coll * Math.sin(theta) });
+                    }
+                } else if (type === 'rectangle') {
+                    const ratioW = 7, ratioH = 4;
+                    const diag = Math.sqrt(ratioW*ratioW + ratioH*ratioH);
+                    const halfW = R_coll * (ratioW / diag);
+                    const halfH = R_coll * (ratioH / diag);
+                    const local = [
+                        { x: -halfW, y: -halfH },
+                        { x:  halfW, y: -halfH },
+                        { x:  halfW, y:  halfH },
+                        { x: -halfW, y:  halfH }
+                    ];
+                    for (let v of local) {
+                        let xr = v.x * Math.cos(angle) - v.y * Math.sin(angle);
+                        let yr = v.x * Math.sin(angle) + v.y * Math.cos(angle);
+                        vertices.push({ x: cx + xr, y: cy + yr });
+                    }
+                } else if (type === 'quad') {
+                    if (!quadVertsLocal) return [];
+                    for (let v of quadVertsLocal) {
+                        let xr = v.x * R_coll * Math.cos(angle) - v.y * R_coll * Math.sin(angle);
+                        let yr = v.x * R_coll * Math.sin(angle) + v.y * R_coll * Math.cos(angle);
+                        vertices.push({ x: cx + xr, y: cy + yr });
+                    }
+                }
+                return vertices;
+            }
+
+            function projectPolygon(vertices, ax, ay) {
+                let min = Infinity, max = -Infinity;
+                for (let v of vertices) {
+                    let p = v.x * ax + v.y * ay;
+                    if (p < min) min = p;
+                    if (p > max) max = p;
+                }
+                return {min, max};
+            }
+
+            function distancePointSegment(px, py, x1, y1, x2, y2) {
+                let abx = x2 - x1;
+                let aby = y2 - y1;
+                let t = ((px - x1) * abx + (py - y1) * aby) / (abx*abx + aby*aby);
+                if (t < 0) t = 0;
+                if (t > 1) t = 1;
+                let projx = x1 + t * abx;
+                let projy = y1 + t * aby;
+                return Math.hypot(px - projx, py - projy);
+            }
+
+            function getPenetrationPolygonPolygon(vertsA, vertsB) {
+                let overlap = Infinity;
+                let smallestAxis = {x: 0, y: 0};
+                let contactPoint = null;
+
+                function checkAxis(ax, ay) {
+                    let projA = projectPolygon(vertsA, ax, ay);
+                    let projB = projectPolygon(vertsB, ax, ay);
+                    if (projA.max < projB.min || projB.max < projA.min) return false;
+                    let o = Math.min(projA.max, projB.max) - Math.max(projA.min, projB.min);
+                    if (o < overlap) {
+                        overlap = o;
+                        let dir = (projA.min + projA.max) / 2 < (projB.min + projB.max) / 2 ? 1 : -1;
+                        smallestAxis = {x: ax * dir, y: ay * dir};
+                    }
+                    return true;
+                }
+
+                for (let i = 0; i < vertsA.length; i++) {
+                    let j = (i+1) % vertsA.length;
+                    let edgeX = vertsA[j].x - vertsA[i].x;
+                    let edgeY = vertsA[j].y - vertsA[i].y;
+                    let nx = -edgeY, ny = edgeX;
+                    let len = Math.hypot(nx, ny);
+                    if (len > 1e-6) {
+                        nx /= len; ny /= len;
+                        if (!checkAxis(nx, ny)) return null;
+                    }
+                }
+                for (let i = 0; i < vertsB.length; i++) {
+                    let j = (i+1) % vertsB.length;
+                    let edgeX = vertsB[j].x - vertsB[i].x;
+                    let edgeY = vertsB[j].y - vertsB[i].y;
+                    let nx = -edgeY, ny = edgeX;
+                    let len = Math.hypot(nx, ny);
+                    if (len > 1e-6) {
+                        nx /= len; ny /= len;
+                        if (!checkAxis(nx, ny)) return null;
+                    }
+                }
+                let len = Math.hypot(smallestAxis.x, smallestAxis.y);
+                if (len > 1e-6) {
+                    smallestAxis.x /= len;
+                    smallestAxis.y /= len;
+                }
+                let avgX = 0, avgY = 0, cnt = 0;
+                for (let v of vertsA) { avgX += v.x; avgY += v.y; cnt++; }
+                for (let v of vertsB) { avgX += v.x; avgY += v.y; cnt++; }
+                avgX /= cnt; avgY /= cnt;
+                return { overlap, axis: smallestAxis, contact: {x: avgX, y: avgY} };
+            }
+
+            function getPenetrationCirclePolygon(cx, cy, r, verts) {
+                let minDist = Infinity;
+                let closestPoint = {x: 0, y: 0};
+                for (let v of verts) {
+                    let d = Math.hypot(v.x - cx, v.y - cy);
+                    if (d < minDist) { minDist = d; closestPoint = v; }
+                }
+                for (let i = 0; i < verts.length; i++) {
+                    let j = (i+1) % verts.length;
+                    let d = distancePointSegment(cx, cy, verts[i].x, verts[i].y, verts[j].x, verts[j].y);
+                    if (d < minDist) {
+                        minDist = d;
+                        let abx = verts[j].x - verts[i].x;
+                        let aby = verts[j].y - verts[i].y;
+                        let t = ((cx - verts[i].x) * abx + (cy - verts[i].y) * aby) / (abx*abx + aby*aby);
+                        if (t < 0) t = 0;
+                        if (t > 1) t = 1;
+                        closestPoint.x = verts[i].x + t * abx;
+                        closestPoint.y = verts[i].y + t * aby;
+                    }
+                }
+                if (minDist < r) {
+                    let dx = cx - closestPoint.x;
+                    let dy = cy - closestPoint.y;
+                    let len = Math.hypot(dx, dy);
+                    if (len < 1e-6) return { overlap: r, axis: {x: 1, y: 0}, contact: closestPoint };
+                    let axis = {x: dx/len, y: dy/len};
+                    return { overlap: r - minDist, axis, contact: closestPoint };
+                }
+                return null;
+            }
+
+            function getPenetration(i, j) {
+                if (inSameGroup(i, j)) return null;
+
+                const typeA = types[i], typeB = types[j];
+                const rA = visualRadii()[i], rB = visualRadii()[j];
+                const cA = centers[i], cB = centers[j];
+                const angleA = angles[i], angleB = angles[j];
+
+                const rCollA = rA + gap/2;
+                const rCollB = rB + gap/2;
+
+                if (typeA === 'circle' && typeB === 'circle') {
+                    const dx = cB.x - cA.x, dy = cB.y - cA.y;
+                    const dist = Math.hypot(dx, dy);
+                    if (dist < rCollA + rCollB - 1e-6) {
+                        const overlap = rCollA + rCollB - dist;
+                        if (dist < 1e-6) return { overlap, axis: {x: 1, y: 0}, contact: {x: (cA.x+cB.x)/2, y: (cA.y+cB.y)/2} };
+                        const axis = {x: dx/dist, y: dy/dist};
+                        return { overlap, axis, contact: {x: (cA.x+cB.x)/2, y: (cA.y+cB.y)/2} };
+                    }
+                    return null;
+                }
+
+                let vertsA = null, vertsB = null;
+                if (typeA !== 'circle') vertsA = getPolygonVertices(typeA, cA.x, cA.y, rCollA, angleA, quadLocalVerts[i]);
+                if (typeB !== 'circle') vertsB = getPolygonVertices(typeB, cB.x, cB.y, rCollB, angleB, quadLocalVerts[j]);
+
+                if (vertsA && vertsB) return getPenetrationPolygonPolygon(vertsA, vertsB);
+                if (typeA === 'circle' && vertsB) return getPenetrationCirclePolygon(cA.x, cA.y, rCollA, vertsB);
+                if (vertsA && typeB === 'circle') {
+                    let res = getPenetrationCirclePolygon(cB.x, cB.y, rCollB, vertsA);
+                    return res;
+                }
+                return null;
+            }
+
+            const dt = 0.02;
+            const subSteps = 3;
+            const damping = 0.95;
+            const angularDamping = 0.9;
+            const attractionStrength = 0.02;
+            const pairAttractionStrength = 0.008;
+            const rotationStrength = 0.005;
+            const correctionFactor = 0.7;
+            const maxCorrectionIter = 30;
+
+            function resolveCollisions() {
+                for (let iter = 0; iter < maxCorrectionIter; iter++) {
+                    let moved = false;
+                    for (let i = 0; i < N; i++) {
+                        for (let j = i+1; j < N; j++) {
+                            const pen = getPenetration(i, j);
+                            if (pen) {
+                                moved = true;
+                                let axis = pen.axis;
+                                const overlap = pen.overlap;
+                                const contact = pen.contact;
+
+                                let leader_i = getGroupLeader(i);
+                                let leader_j = getGroupLeader(j);
+                                let i_eff = (leader_i !== -1 && leader_i !== i) ? leader_i : i;
+                                let j_eff = (leader_j !== -1 && leader_j !== j) ? leader_j : j;
+
+                                const dirX = centers[j_eff].x - centers[i_eff].x;
+                                const dirY = centers[j_eff].y - centers[i_eff].y;
+                                const dot = axis.x * dirX + axis.y * dirY;
+                                if (dot < 0) {
+                                    axis.x = -axis.x;
+                                    axis.y = -axis.y;
+                                }
+
+                                const shift = overlap * correctionFactor;
+                                centers[i_eff].x -= axis.x * shift * 0.5;
+                                centers[i_eff].y -= axis.y * shift * 0.5;
+                                centers[j_eff].x += axis.x * shift * 0.5;
+                                centers[j_eff].y += axis.y * shift * 0.5;
+
+                                if (i_eff !== i) updateGroupPositions();
+                                if (j_eff !== j) updateGroupPositions();
+
+                                if (contact) {
+                                    const force = overlap * 0.5;
+                                    const fx_i = -axis.x * force;
+                                    const fy_i = -axis.y * force;
+                                    const fx_j = axis.x * force;
+                                    const fy_j = axis.y * force;
+
+                                    const r_i_x = contact.x - centers[i].x;
+                                    const r_i_y = contact.y - centers[i].y;
+                                    const torque_i = r_i_x * fy_i - r_i_y * fx_i;
+
+                                    const r_j_x = contact.x - centers[j].x;
+                                    const r_j_y = contact.y - centers[j].y;
+                                    const torque_j = r_j_x * fy_j - r_j_y * fx_j;
+
+                                    if (leader_i !== -1) {
+                                        angularVelocities[leader_i] += torque_i * rotationStrength;
+                                    } else {
+                                        angularVelocities[i] += torque_i * rotationStrength;
+                                    }
+
+                                    if (leader_j !== -1) {
+                                        angularVelocities[leader_j] += torque_j * rotationStrength;
+                                    } else {
+                                        angularVelocities[j] += torque_j * rotationStrength;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    const rColl = collisionRadii();
+                    const groupMembers = getGroupMembers();
+                    for (let i = 0; i < N; i++) {
+                        if (groupMembers.has(i)) continue;
+                        const dx = centers[i].x - centerX;
+                        const dy = centers[i].y - centerY;
+                        const dist = Math.hypot(dx, dy);
+                        const maxDist = R - rColl[i];
+                        if (dist > maxDist) {
+                            moved = true;
+                            if (dist > 1e-6) {
+                                const nx = dx / dist;
+                                const ny = dy / dist;
+                                centers[i].x = centerX + maxDist * nx;
+                                centers[i].y = centerY + maxDist * ny;
+                                velocities[i].x *= 0.5;
+                                velocities[i].y *= 0.5;
+                            } else {
+                                const angle = Math.random() * 2 * Math.PI;
+                                centers[i].x = centerX + maxDist * Math.cos(angle);
+                                centers[i].y = centerY + maxDist * Math.sin(angle);
+                            }
+                        }
+                    }
+
+                    enforceGroupBoundary();
+
+                    if (!moved) break;
+                }
+            }
+
+            function forceStep() {
+                for (let s = 0; s < subSteps; s++) {
+                    let forces = centers.map(() => ({x: 0, y: 0}));
+                    
+                    for (let i = 0; i < N; i++) {
+                        const dx = centerX - centers[i].x;
+                        const dy = centerY - centers[i].y;
+                        const dist = Math.hypot(dx, dy);
+                        if (dist > 1e-6) {
+                            const nx = dx / dist;
+                            const ny = dy / dist;
+                            const force = attractionStrength * dist;
+                            forces[i].x += nx * force;
+                            forces[i].y += ny * force;
+                        }
+                    }
+
+                    for (let i = 0; i < N; i++) {
+                        for (let j = i+1; j < N; j++) {
+                            if (inSameGroup(i, j)) continue;
+                            const dx = centers[j].x - centers[i].x;
+                            const dy = centers[j].y - centers[i].y;
+                            const dist = Math.hypot(dx, dy);
+                            const rCollI = visualRadii()[i] + gap/2;
+                            const rCollJ = visualRadii()[j] + gap/2;
+                            const targetDist = rCollI + rCollJ;
+                            if (dist > targetDist + 1e-6) {
+                                const forceDirX = dx / dist;
+                                const forceDirY = dy / dist;
+                                const excess = dist - targetDist;
+                                const force = pairAttractionStrength * excess;
+                                forces[i].x += forceDirX * force;
+                                forces[i].y += forceDirY * force;
+                                forces[j].x -= forceDirX * force;
+                                forces[j].y -= forceDirY * force;
+                            }
+                        }
+                    }
+
+                    for (let g of groups) {
+                        const leader = g.leader;
+                        let totalForceX = 0, totalForceY = 0;
+                        let totalTorque = 0;
+                        const members = [leader, ...g.followers.map(f => f.idx)];
+                        for (let idx of members) {
+                            totalForceX += forces[idx].x;
+                            totalForceY += forces[idx].y;
+                            const dx = centers[idx].x - centers[leader].x;
+                            const dy = centers[idx].y - centers[leader].y;
+                            totalTorque += dx * forces[idx].y - dy * forces[idx].x;
+                        }
+                        const groupMass = members.length;
+                        let inertia = 0;
+                        for (let idx of members) {
+                            const dx = centers[idx].x - centers[leader].x;
+                            const dy = centers[idx].y - centers[leader].y;
+                            inertia += dx*dx + dy*dy;
+                        }
+                        if (inertia < 1e-6) inertia = 1;
+
+                        velocities[leader].x += totalForceX / groupMass * dt;
+                        velocities[leader].y += totalForceY / groupMass * dt;
+                        angularVelocities[leader] += totalTorque / inertia * dt;
+
+                        velocities[leader].x *= damping;
+                        velocities[leader].y *= damping;
+                        angularVelocities[leader] *= angularDamping;
+
+                        centers[leader].x += velocities[leader].x * dt;
+                        centers[leader].y += velocities[leader].y * dt;
+                        angles[leader] += angularVelocities[leader] * dt;
+
+                        updateGroupPositions();
+
+                        for (let idx of members) {
+                            forces[idx] = {x: 0, y: 0};
+                        }
+                    }
+
+                    const groupMembersSet = getGroupMembers();
+                    for (let i = 0; i < N; i++) {
+                        if (groupMembersSet.has(i)) continue;
+                        velocities[i].x += forces[i].x * dt;
+                        velocities[i].y += forces[i].y * dt;
+                        velocities[i].x *= damping;
+                        velocities[i].y *= damping;
+                        centers[i].x += velocities[i].x * dt;
+                        centers[i].y += velocities[i].y * dt;
+
+                        angularVelocities[i] *= angularDamping;
+                        angles[i] += angularVelocities[i] * dt;
+                    }
+
+                    resolveCollisions();
+                    updateGroupPositions();
+
+                    for (let i = 0; i < N; i++) {
+                        if (groupMembersSet.has(i)) continue;
+                        velocities[i].x *= 0.8;
+                        velocities[i].y *= 0.8;
+                        angularVelocities[i] *= 0.8;
+                    }
+                }
+            }
+
+            function hasOverlaps() {
+                for (let i = 0; i < N; i++) {
+                    for (let j = i+1; j < N; j++) {
+                        if (getPenetration(i, j) !== null) return true;
+                    }
+                }
+                return false;
+            }
+
+            function findMaxScale() {
+                for (let step = 0; step < 30; step++) forceStep();
+                let low = scale;
+                let high = 3.0;
+                for (let iter = 0; iter < 12; iter++) {
+                    let mid = (low + high) / 2;
+                    scale = mid;
+                    for (let step = 0; step < 15; step++) forceStep();
+                    if (hasOverlaps()) {
+                        high = mid;
+                    } else {
+                        low = mid;
+                    }
+                }
+                scale = low;
+                for (let step = 0; step < 50; step++) forceStep();
+            }
+
+            function draw() {
+                ctx.clearRect(0, 0, w, h);
+                ctx.beginPath();
+                ctx.arc(centerX, centerY, R, 0, 2*Math.PI);
+                ctx.strokeStyle = '#333';
+                ctx.stroke();
+
+                const rVis = visualRadii();
+                for (let i = 0; i < N; i++) {
+                    ctx.save();
+                    ctx.translate(centers[i].x, centers[i].y);
+                    ctx.rotate(angles[i]);
+                    ctx.beginPath();
+                    if (types[i] === 'circle') {
+                        ctx.arc(0, 0, rVis[i], 0, 2*Math.PI);
+                    } else {
+                        let verts;
+                        if (types[i] === 'rectangle') {
+                            const ratioW = 7, ratioH = 4;
+                            const diag = Math.sqrt(ratioW*ratioW + ratioH*ratioH);
+                            const halfW = rVis[i] * (ratioW / diag);
+                            const halfH = rVis[i] * (ratioH / diag);
+                            const local = [
+                                { x: -halfW, y: -halfH },
+                                { x:  halfW, y: -halfH },
+                                { x:  halfW, y:  halfH },
+                                { x: -halfW, y:  halfH }
+                            ];
+                            verts = [];
+                            for (let v of local) {
+                                let xr = v.x * Math.cos(0) - v.y * Math.sin(0);
+                                let yr = v.x * Math.sin(0) + v.y * Math.cos(0);
+                                verts.push({ x: xr, y: yr });
+                            }
+                        } else if (types[i] === 'quad') {
+                            if (quadLocalVerts[i]) {
+                                verts = [];
+                                for (let v of quadLocalVerts[i]) {
+                                    let xr = v.x * rVis[i] * Math.cos(0) - v.y * rVis[i] * Math.sin(0);
+                                    let yr = v.x * rVis[i] * Math.sin(0) + v.y * rVis[i] * Math.cos(0);
+                                    verts.push({ x: xr, y: yr });
+                                }
+                            } else {
+                                verts = [];
+                            }
+                        } else {
+                            verts = getPolygonVertices(types[i], 0, 0, rVis[i], 0, null);
+                        }
+                        if (verts.length > 0) {
+                            ctx.moveTo(verts[0].x, verts[0].y);
+                            for (let k = 1; k < verts.length; k++) {
+                                ctx.lineTo(verts[k].x, verts[k].y);
+                            }
+                            ctx.closePath();
+                        }
+                    }
+                    ctx.fillStyle = `hsl(${i*30}, 70%, 60%)`;
+                    ctx.fill();
+                    ctx.strokeStyle = 'black';
+                    ctx.stroke();
+                    ctx.restore();
+                }
+
+                document.getElementById('scaleValue').innerText = scale.toFixed(2);
+                document.getElementById('gapValue').innerText = gap;
+                document.getElementById('countValue').innerText = N;
+            }
+
+            document.getElementById('iterate').addEventListener('click', () => {
+                forceStep();
+                draw();
+            });
+
+            document.getElementById('reset').addEventListener('click', () => {
+                initCentersAndVelocities();
+                draw();
+            });
+
+            document.getElementById('maxsize').addEventListener('click', () => {
+                findMaxScale();
+                draw();
+            });
+
+            const scaleSlider = document.getElementById('scale');
+            scaleSlider.addEventListener('input', (e) => {
+                scale = parseFloat(e.target.value);
+                const rColl = collisionRadii();
+                for (let i = 0; i < N; i++) {
+                    const d = Math.hypot(centers[i].x - centerX, centers[i].y - centerY);
+                    if (d + rColl[i] > R) {
+                        const angle = Math.atan2(centers[i].y - centerY, centers[i].x - centerX);
+                        centers[i].x = centerX + (R - rColl[i]) * Math.cos(angle);
+                        centers[i].y = centerY + (R - rColl[i]) * Math.sin(angle);
+                    }
+                }
+                updateGroupPositions();
+                draw();
+            });
+
+            const gapSlider = document.getElementById('gap');
+            gapSlider.addEventListener('input', (e) => {
+                gap = parseInt(e.target.value);
+                const rColl = collisionRadii();
+                for (let i = 0; i < N; i++) {
+                    const d = Math.hypot(centers[i].x - centerX, centers[i].y - centerY);
+                    if (d + rColl[i] > R) {
+                        const angle = Math.atan2(centers[i].y - centerY, centers[i].x - centerX);
+                        centers[i].x = centerX + (R - rColl[i]) * Math.cos(angle);
+                        centers[i].y = centerY + (R - rColl[i]) * Math.sin(angle);
+                    }
+                }
+                updateGroupPositions();
+                draw();
+            });
+
+            const countSlider = document.getElementById('count');
+            countSlider.addEventListener('input', (e) => {
+                const newN = parseInt(e.target.value);
+                if (newN === N) return;
+                const oldN = N;
+                N = newN;
+                baseRadii = allBaseRadii.slice(0, N);
+                types = allTypes.slice(0, N);
+                const newQuadLocalVerts = new Array(N).fill(null);
+                for (let i = 0; i < Math.min(oldN, N); i++) {
+                    if (types[i] === 'quad' && quadLocalVerts[i]) {
+                        newQuadLocalVerts[i] = quadLocalVerts[i];
+                    }
+                }
+                if (newN > oldN) {
+                    for (let i = oldN; i < newN; i++) {
+                        if (types[i] === 'quad') {
+                            newQuadLocalVerts[i] = [
+                                { x: -0.85, y: -0.5 },
+                                { x:  0.85, y: -0.5 },
+                                { x:  0.6,  y:  0.5 },
+                                { x: -0.6,  y:  0.5 }
+                            ];
+                            let maxDist = 0;
+                            for (let v of newQuadLocalVerts[i]) {
+                                let d = Math.hypot(v.x, v.y);
+                                if (d > maxDist) maxDist = d;
+                            }
+                            if (maxDist > 0) {
+                                for (let v of newQuadLocalVerts[i]) {
+                                    v.x /= maxDist;
+                                    v.y /= maxDist;
+                                }
+                            }
+                        }
+                    }
+                }
+                quadLocalVerts = newQuadLocalVerts;
+
+                if (newN > oldN) {
+                    for (let i = oldN; i < newN; i++) {
+                        let x, y, d;
+                        const rColl = collisionRadii()[i];
+                        do {
+                            x = centerX + (Math.random() - 0.5) * 2 * R * 0.9;
+                            y = centerY + (Math.random() - 0.5) * 2 * R * 0.9;
+                            d = Math.hypot(x - centerX, y - centerY);
+                        } while (d + rColl > R);
+                        centers.push({x, y});
+                        angles.push(Math.random() * 2 * Math.PI);
+                        velocities.push({x: 0, y: 0});
+                        angularVelocities.push(0);
+                    }
+                } else {
+                    centers.splice(newN);
+                    angles.splice(newN);
+                    velocities.splice(newN);
+                    angularVelocities.splice(newN);
+                }
+
+                groups = [];
+                createGroups();
+                updateGroupPositions();
+                resolveCollisions();
+                draw();
+            });
+
+            initCentersAndVelocities();
+            draw();
+        })();
+    </script>
+</body>
+</html>
